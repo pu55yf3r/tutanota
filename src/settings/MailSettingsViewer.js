@@ -5,7 +5,7 @@ import {lang} from "../misc/LanguageViewModel"
 import {isSameId} from "../api/common/EntityFunctions"
 import type {TutanotaProperties} from "../api/entities/tutanota/TutanotaProperties"
 import {TutanotaPropertiesTypeRef} from "../api/entities/tutanota/TutanotaProperties"
-import {FeatureType, InboxRuleType, OperationType, OutOfOfficeNotificationMessageType} from "../api/common/TutanotaConstants"
+import {FeatureType, InboxRuleType, OperationType} from "../api/common/TutanotaConstants"
 import {load, update} from "../api/main/Entity"
 import {getEnabledMailAddressesForGroupInfo, neverNull, noOp} from "../api/common/utils/Utils"
 import {MailFolderTypeRef} from "../api/entities/tutanota/MailFolder"
@@ -41,16 +41,14 @@ import {LockedError} from "../api/common/error/RestError"
 import type {EditAliasesFormAttrs} from "./EditAliasesFormN"
 import {createEditAliasFormAttrs, updateNbrOfAliases} from "./EditAliasesFormN"
 import {
-	getDefaultNotificationLabel,
-	getMailMembership,
-	isNotificationReallyEnabled,
+	isNotificationReallyEnabled, loadOutOfOfficeNotification,
 	showEditOutOfOfficeNotificationDialog
 } from "./EditOutOfOfficeNotificationDialog"
 import {MailboxGroupRootTypeRef} from "../api/entities/tutanota/MailboxGroupRoot"
 import type {OutOfOfficeNotification} from "../api/entities/tutanota/OutOfOfficeNotification"
 import {LazyLoaded} from "../api/common/utils/LazyLoaded"
-import {OutOfOfficeNotificationTypeRef} from "../api/entities/tutanota/OutOfOfficeNotification"
 import {showNotAvailableForFreeDialog} from "../misc/ErrorHandlerImpl"
+import {OutOfOfficeNotificationTypeRef} from "../api/entities/tutanota/OutOfOfficeNotification"
 
 assertMainOrNode()
 
@@ -68,9 +66,7 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 	_identifierListViewer: IdentifierListViewer;
 	_editAliasFormAttrs: EditAliasesFormAttrs;
 	_outOfOfficeNotification: LazyLoaded<?OutOfOfficeNotification>;
-	_outOfOfficeExpanded: Stream<boolean>;
-	_outOfOfficeIsEnabled: Stream<boolean>;
-	_outOfOfficeTableLines: Stream<Array<TableLineAttrs>>;
+	_outOfOfficeIsEnabled: Stream<string>; // stores the status label, based on whether the notification is/ or will really be activated (checking start time/ end time)
 
 	constructor() {
 		this._defaultSender = stream(getDefaultSenderFromUser(logins.getUserController()))
@@ -81,10 +77,8 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 		this._noAutomaticContacts = stream(logins.getUserController().props.noAutomaticContacts)
 		this._enableMailIndexing = stream(locator.search.indexState().mailIndexEnabled)
 		this._inboxRulesExpanded = stream(false)
-		this._outOfOfficeExpanded = stream(false)
 		this._inboxRulesTableLines = stream([])
-		this._outOfOfficeIsEnabled = stream(false)
-		this._outOfOfficeTableLines = stream([])
+		this._outOfOfficeIsEnabled = stream(lang.get("deactivated_label"))
 		this._indexStateWatch = null
 		this._identifierListViewer = new IdentifierListViewer(logins.getUserController().user)
 		this._updateInboxRules(logins.getUserController().props)
@@ -96,12 +90,7 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 		}
 
 		this._outOfOfficeNotification = new LazyLoaded(() => {
-			const mailMembership = getMailMembership()
-			return locator.entityClient.load(MailboxGroupRootTypeRef, mailMembership.group).then((grouproot) => {
-				if (grouproot.outOfOfficeNotification) {
-					return locator.entityClient.load(OutOfOfficeNotificationTypeRef, grouproot.outOfOfficeNotification)
-				}
-			})
+			return loadOutOfOfficeNotification()
 		}, null)
 		this._outOfOfficeNotification.getAsync().then(() => this._updateOutOfOfficeNotification())
 	}
@@ -156,6 +145,12 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 			injectionsRight: () => [m(ButtonN, changeSignatureButtonAttrs)]
 		}
 
+		const outOfOfficeAttrs: TextFieldAttrs = {
+			label: "outOfOfficeNotification_title",
+			value: this._outOfOfficeIsEnabled,
+			disabled: true,
+			injectionsRight: () => [m(ButtonN, editOutOfOfficeNotificationButtonAttrs)]
+		}
 
 		const editOutOfOfficeNotificationButtonAttrs: ButtonAttrs = {
 			label: "outOfOfficeNotification_title",
@@ -246,14 +241,6 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 			lines: this._inboxRulesTableLines(),
 		}
 
-		const outOfOfficeTableAttrs: TableAttrs = {
-			columnHeading: ["type_label", "state_label"],
-			columnWidths: [ColumnWidth.Largest, ColumnWidth.Small],
-			showActionButtonColumn: true,
-			addButtonAttrs: editOutOfOfficeNotificationButtonAttrs,
-			lines: this._outOfOfficeTableLines(),
-		}
-
 		return [
 			m("#user-settings.fill-absolute.scroll.plr-l.pb-xl", {
 				role: "group",
@@ -287,14 +274,7 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 					m(".small", lang.get("nbrOfInboxRules_msg", {"{1}": logins.getUserController().props.inboxRules.length})),
 				],
 				m(this._identifierListViewer),
-				[
-					m(".flex-space-between.items-center.mt-l.mb-s", [
-						m(".h4", lang.get('outOfOfficeNotification_title')),
-						m(ExpanderButtonN, {label: "show_action", expanded: this._outOfOfficeExpanded})
-					]),
-					m(ExpanderPanelN, {expanded: this._outOfOfficeExpanded}, m(TableN, outOfOfficeTableAttrs)),
-					m(".small", this._outOfOfficeIsEnabled() ? lang.get("outOfOfficeEnabled_msg") : lang.get("outOfOfficeDisabled_msg")),
-				]
+				m(TextFieldN, outOfOfficeAttrs),
 			])
 		]
 	}
@@ -332,44 +312,11 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 	}
 
 	_updateOutOfOfficeNotification(): void {
-		const defaultOutOfOfficeTableLine = {
-			cells: [getDefaultNotificationLabel(false), lang.get("notificationsDisabled_label")],
-			actionButton: null
-		}
 		const notification = this._outOfOfficeNotification.getLoaded()
-		let defaultIsSet = false
-		this._outOfOfficeTableLines([defaultOutOfOfficeTableLine])
-		this._outOfOfficeIsEnabled(false)
 		if (notification && isNotificationReallyEnabled(notification)) {
-			this._outOfOfficeIsEnabled(true)
-			const sameOrganizationIsSet = notification.notifications.some((message) => message.type
-				=== OutOfOfficeNotificationMessageType.SameOrganization)
-			const outOfOfficeTableLines = notification.notifications.filter((message) =>
-				message.type === OutOfOfficeNotificationMessageType.Default
-				|| message.type === OutOfOfficeNotificationMessageType.SameOrganization).map((message) => {
-				if (message.type === OutOfOfficeNotificationMessageType.Default) {
-					defaultIsSet = true
-					return {
-						// TODO maybe switch label "To everyone"/"Outside my organization" instead of default
-						cells: [getDefaultNotificationLabel(sameOrganizationIsSet), lang.get("notificationsEnabled_label")],
-						actionButton: null
-					}
-				} else {
-					return {
-						cells: [lang.get("outOfOfficeInternal_msg"), lang.get("notificationsEnabled_label")],
-						actionButton: null
-					}
-				}
-			})
-			if (!defaultIsSet) {
-				// We always show the outside organization label if only internal is enabled
-				const externalOutOfOfficeTableLine = {
-					cells: [getDefaultNotificationLabel(true), lang.get("notificationsDisabled_label")],
-					actionButton: null
-				}
-				outOfOfficeTableLines.push(externalOutOfOfficeTableLine)
-			}
-			this._outOfOfficeTableLines(outOfOfficeTableLines)
+			this._outOfOfficeIsEnabled(lang.get("activated_label"))
+		} else {
+			this._outOfOfficeIsEnabled(lang.get("deactivated_label"))
 		}
 		m.redraw()
 	}
@@ -401,7 +348,9 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 					this._editAliasFormAttrs.userGroupInfo = groupInfo
 					m.redraw()
 				})
-			} else if (isUpdateForTypeRef(MailboxGroupRootTypeRef, update)) {
+			} else if (isUpdateForTypeRef(MailboxGroupRootTypeRef, update)
+				|| isUpdateForTypeRef(OutOfOfficeNotificationTypeRef, update)) {
+				//TODO would it be enough to use either of those, to avoid redrawing twice?
 				this._outOfOfficeNotification.reload().then(() => this._updateOutOfOfficeNotification())
 			}
 			return p.then(() => {

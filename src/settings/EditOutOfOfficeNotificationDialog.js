@@ -1,11 +1,11 @@
-//@flow
+// @flow
 import m from "mithril"
 import {Dialog} from "../gui/base/Dialog"
 import {DatePicker} from "../gui/base/DatePicker"
 import {getStartOfTheWeekOffsetForUser} from "../calendar/CalendarUtils"
 import {HtmlEditor} from "../gui/base/HtmlEditor"
 import type {OutOfOfficeNotification} from "../api/entities/tutanota/OutOfOfficeNotification"
-import {createOutOfOfficeNotification} from "../api/entities/tutanota/OutOfOfficeNotification"
+import {createOutOfOfficeNotification, OutOfOfficeNotificationTypeRef} from "../api/entities/tutanota/OutOfOfficeNotification"
 import {logins} from "../api/main/LoginController"
 import type {GroupMembership} from "../api/entities/sys/GroupMembership"
 import {TextFieldN} from "../gui/base/TextFieldN"
@@ -20,6 +20,14 @@ import type {OutOfOfficeNotificationMessage} from "../api/entities/tutanota/OutO
 import {createOutOfOfficeNotificationMessage} from "../api/entities/tutanota/OutOfOfficeNotificationMessage"
 import {px} from "../gui/size"
 import {ButtonType} from "../gui/base/ButtonN"
+import {MailboxGroupRootTypeRef} from "../api/entities/tutanota/MailboxGroupRoot"
+
+const RecipientMessageType = Object.freeze({
+	EXTERNAL_TO_EVERYONE: 0,
+	INTERNAL_AND_EXTERNAL: 1,
+	INTERNAL_ONLY: 2
+})
+type RecipientMessageTypeEnum = $Values<typeof RecipientMessageType>;
 
 class NotificationData {
 	outOfOfficeNotification: OutOfOfficeNotification
@@ -32,8 +40,7 @@ class NotificationData {
 	organizationOutOfOfficeEditor: HtmlEditor
 	defaultOutOfOfficeEditor: HtmlEditor
 	timeRangeEnabled: Stream<boolean> = stream(false)
-	organizationMessageEnabled: Stream<boolean> = stream(false)
-	defaultMessageEnabled: Stream<boolean> = stream(true)
+	recipientMessageTypes: Stream<RecipientMessageTypeEnum> = stream(RecipientMessageType.EXTERNAL_TO_EVERYONE)
 	initialSetup: boolean
 
 	constructor(outOfOfficeNotification: ?OutOfOfficeNotification) {
@@ -62,34 +69,31 @@ class NotificationData {
 		if (outOfOfficeNotification) {
 			this.enabled(outOfOfficeNotification.enabled)
 			let defaultEnabled = false
+			let organizationEnabled = false
 			outOfOfficeNotification.notifications.forEach((notification) => {
 				if (notification.type === OutOfOfficeNotificationMessageType.Default) {
 					defaultEnabled = true
 					this.defaultSubject(notification.subject)
 					this.defaultOutOfOfficeEditor.setValue(notification.message)
 				} else if (notification.type === OutOfOfficeNotificationMessageType.SameOrganization) {
-					this.organizationMessageEnabled(true)
+					organizationEnabled = true
 					this.organizationSubject(notification.subject)
 					this.organizationOutOfOfficeEditor.setValue(notification.message)
 				}
 			})
-			this.defaultMessageEnabled(defaultEnabled)
+			if (defaultEnabled && organizationEnabled) {
+				this.recipientMessageTypes(RecipientMessageType.INTERNAL_AND_EXTERNAL)
+			} else if (organizationEnabled) {
+				this.recipientMessageTypes(RecipientMessageType.INTERNAL_ONLY)
+			} else {
+				this.recipientMessageTypes(RecipientMessageType.EXTERNAL_TO_EVERYONE)
+			}
 			if (outOfOfficeNotification.startTime) {
 				this.timeRangeEnabled(true)
 				this.outOfOfficeStartTimePicker.setDate(outOfOfficeNotification.startTime)
 				this.outOfOfficeEndTimePicker.setDate(outOfOfficeNotification.endTime)
 			}
 		}
-		this.organizationMessageEnabled.map(enabled => {
-			if (!enabled) {
-				this.defaultMessageEnabled(true)
-			}
-		})
-		this.defaultMessageEnabled.map(enabled => {
-			if (!enabled) {
-				this.organizationMessageEnabled(true)
-			}
-		})
 	}
 
 	/**
@@ -105,7 +109,7 @@ class NotificationData {
 			return null
 		}
 		const notificationMessages: OutOfOfficeNotificationMessage[] = []
-		if (this.defaultMessageEnabled()) {
+		if (this.isDefaultMessageEnabled()) {
 			const defaultNotification: OutOfOfficeNotificationMessage = createOutOfOfficeNotificationMessage({
 				subject: this.defaultSubject(),
 				message: this.defaultOutOfOfficeEditor.getValue(),
@@ -113,7 +117,7 @@ class NotificationData {
 			})
 			notificationMessages.push(defaultNotification)
 		}
-		if (this.organizationMessageEnabled()) {
+		if (this.isOrganizationMessageEnabled()) {
 			const organizationNotification: OutOfOfficeNotificationMessage = createOutOfOfficeNotificationMessage({
 				subject: this.organizationSubject(),
 				message: this.organizationOutOfOfficeEditor.getValue(),
@@ -132,54 +136,72 @@ class NotificationData {
 		this.outOfOfficeNotification.notifications = notificationMessages
 		return this.outOfOfficeNotification
 	}
+
+	isOrganizationMessageEnabled(): boolean {
+		return this.recipientMessageTypes() === RecipientMessageType.INTERNAL_ONLY
+			|| this.recipientMessageTypes() === RecipientMessageType.INTERNAL_AND_EXTERNAL
+	}
+
+	isDefaultMessageEnabled(): boolean {
+		return this.recipientMessageTypes() === RecipientMessageType.EXTERNAL_TO_EVERYONE
+			|| this.recipientMessageTypes() === RecipientMessageType.INTERNAL_AND_EXTERNAL
+	}
+
 }
 
 export function showEditOutOfOfficeNotificationDialog(outOfOfficeNotification: ?OutOfOfficeNotification) {
 	const notificationData = new NotificationData(outOfOfficeNotification)
 	const statusItems = [
 		{
-			name: lang.get("notificationsDisabled_label"),
+			name: lang.get("deactivated_label"),
 			value: false
 		},
 		{
-			name: lang.get("notificationsEnabled_label"),
+			name: lang.get("activated_label"),
 			value: true
 		}
 	]
+	const recipientItems = [
+		{
+			name: lang.get("everyone_label"),
+			value: RecipientMessageType.EXTERNAL_TO_EVERYONE
+		},
+		{
+			name: lang.get("internalAndExternal_label"),
+			value: RecipientMessageType.INTERNAL_AND_EXTERNAL
+		},
+		{
+			name: lang.get("internal_label"),
+			value: RecipientMessageType.INTERNAL_ONLY
+		}
+	]
+	const recipientHelpLabel: lazy<string> = () => lang.get("outOfOfficeRecipientsHelp_label")
+	const statusSelector: DropDownSelector<boolean> = new DropDownSelector("state_label", null, statusItems, notificationData.enabled)
+	const recipientSelector: DropDownSelector<RecipientMessageTypeEnum> = new DropDownSelector("outOfOfficeRecipients_label", recipientHelpLabel, recipientItems, notificationData.recipientMessageTypes)
 	const timeRangeCheckboxAttrs: CheckboxAttrs = {
 		label: () => lang.get("outOfOfficeTimeRange_msg"),
 		checked: notificationData.timeRangeEnabled,
 		helpLabel: () => lang.get("outOfOfficeTimeRangeHelp_msg"),
 	}
-	const organizationMessageCheckboxAttrs: CheckboxAttrs = {
-		label: () => lang.get("outOfOfficeEnableInternal_msg"),
-		checked: notificationData.organizationMessageEnabled,
-		helpLabel: () => lang.get("outOfOfficeEnableInternalHelp_msg"),
-	}
-	const defaultMessageCheckboxAttrs: CheckboxAttrs = {
-		label: () => lang.get("outOfOfficeEnableExternal_msg"),
-		checked: notificationData.defaultMessageEnabled,
-		helpLabel: () => lang.get("outOfOfficeEnableExternalHelp_msg"),
-	}
-	const statusSelector: DropDownSelector<boolean> = new DropDownSelector("state_label", null, statusItems, notificationData.enabled)
 
 	const childForm = {
 		view: () => {
+			const defaultEnabled = notificationData.isDefaultMessageEnabled()
+			const organizationEnabled = notificationData.isOrganizationMessageEnabled()
 			return [
 				m(".h4.text-center.mt", lang.get("configuration_label")),
 				m(".mt", lang.get("outOfOfficeExplanation_msg")),
 				m(statusSelector),
+				m(recipientSelector),
 				m(".mt.flex-start", m(CheckboxN, timeRangeCheckboxAttrs)),
 				notificationData.timeRangeEnabled()
 					? m(".flex-start", [
 						m(notificationData.outOfOfficeStartTimePicker), m(notificationData.outOfOfficeEndTimePicker)
 					])
 					: null,
-				m(".mt.flex-start", m(CheckboxN, organizationMessageCheckboxAttrs)),
-				m(".mt.flex-start", m(CheckboxN, defaultMessageCheckboxAttrs)), // TODO organizationMessageEnabled() ? .. : null
-				notificationData.defaultMessageEnabled()
+				defaultEnabled
 					? [
-						m(".h4.text-center.mt", getDefaultNotificationLabel(notificationData.organizationMessageEnabled())),
+						m(".h4.text-center.mt", getDefaultNotificationLabel(organizationEnabled)),
 						m(TextFieldN, {
 								label: "subject_label",
 								value: notificationData.defaultSubject,
@@ -194,7 +216,7 @@ export function showEditOutOfOfficeNotificationDialog(outOfOfficeNotification: ?
 						m(notificationData.defaultOutOfOfficeEditor)
 					]
 					: null,
-				notificationData.organizationMessageEnabled()
+				organizationEnabled
 					? [
 						m(".h4.text-center.mt", lang.get("outOfOfficeInternal_msg")),
 						m(TextFieldN, {
@@ -268,7 +290,7 @@ function notificationMessagesAreValid(messages: OutOfOfficeNotificationMessage[]
  * @param organizationMessageEnabled true if a special messagesfor senders from the same organization is setup
  * @returns {string} the label for default notifications (depends on whether only default notifications or both default and same organization notifications are enabled)
  */
-export function getDefaultNotificationLabel(organizationMessageEnabled: boolean): string {
+function getDefaultNotificationLabel(organizationMessageEnabled: boolean): string {
 	if (organizationMessageEnabled) {
 		return lang.get("outOfOfficeExternal_msg")
 	} else {
@@ -276,7 +298,16 @@ export function getDefaultNotificationLabel(organizationMessageEnabled: boolean)
 	}
 }
 
-export function getMailMembership(): GroupMembership {
+export function loadOutOfOfficeNotification(): Promise<?OutOfOfficeNotification> {
+	const mailMembership = getMailMembership()
+	return locator.entityClient.load(MailboxGroupRootTypeRef, mailMembership.group).then((grouproot) => {
+		if (grouproot.outOfOfficeNotification) {
+			return locator.entityClient.load(OutOfOfficeNotificationTypeRef, grouproot.outOfOfficeNotification)
+		}
+	})
+}
+
+function getMailMembership(): GroupMembership {
 	return logins.getUserController().getMailGroupMemberships()[0] //TODO is this always correct?
 }
 
@@ -285,4 +316,11 @@ export function getMailMembership(): GroupMembership {
  * */
 export function isNotificationReallyEnabled(notification: OutOfOfficeNotification): boolean {
 	return notification.enabled && (!notification.startTime || !notification.endTime || notification.endTime.getTime() > Date.now())
+}
+
+/**
+ * Returns true if notifications are currently sent.
+ * */
+export function isNotificationCurrentlyActive(notification: OutOfOfficeNotification): boolean {
+	return isNotificationReallyEnabled(notification) && (!notification.startTime || notification.startTime.getTime() < Date.now())
 }
