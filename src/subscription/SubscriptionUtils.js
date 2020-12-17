@@ -188,6 +188,12 @@ export function getPreconditionFailedPaymentMsg(e: PreconditionFailedError): Tra
 			return "payCardExpiredError_msg"
 		case "card.change":
 			return "payChangeError_msg"
+		case "card.3ds2_pending":
+			return "creditCardPending3dsVerification_msg"
+		case "card.invalid_cvv":
+			return "creditCardCVVInvalid_msg"
+		case "card.verification_failed":
+			return "creditCardDeclined_msg"
 		default:
 			return "payContactUsError_msg"
 	}

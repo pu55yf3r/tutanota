@@ -16,7 +16,7 @@ import {client} from "../misc/ClientDetector"
 import {AccountingInfoTypeRef} from "../api/entities/sys/AccountingInfo"
 import {CustomerInfoTypeRef} from "../api/entities/sys/CustomerInfo"
 import {neverNull} from "../api/common/utils/Utils"
-import {load} from "../api/main/Entity"
+import {load, serviceRequestVoid} from "../api/main/Entity"
 import {CustomerTypeRef} from "../api/entities/sys/Customer"
 import type {SubscriptionOptions} from "./SubscriptionUtils"
 import {SubscriptionType, UpgradeType} from "./SubscriptionUtils"
@@ -26,6 +26,7 @@ import {SegmentControl} from "../gui/base/SegmentControl"
 import type {WizardPageAttrs, WizardPageN} from "../gui/base/WizardDialogN"
 import {emitWizardEvent, WizardEventType} from "../gui/base/WizardDialogN"
 import type {Country} from "../api/common/CountryList"
+import {HttpMethod} from "../api/common/EntityFunctions"
 
 /**
  * Wizard page for editing invoice and payment data.
@@ -35,8 +36,10 @@ export class InvoiceAndPaymentDataPage implements WizardPageN<UpgradeSubscriptio
 	_invoiceDataInput: InvoiceDataInput;
 	_availablePaymentMethods: Array<SegmentControlItem<PaymentMethodTypeEnum>>;
 	_selectedPaymentMethod: Stream<PaymentMethodTypeEnum>;
+	_upgradeData: UpgradeSubscriptionData;
 
 	constructor(upgradeData: UpgradeSubscriptionData) {
+		this._upgradeData = upgradeData
 		this._selectedPaymentMethod = stream()
 		this._selectedPaymentMethod.map((method) => this._paymentMethodInput.updatePaymentMethod(method))
 	}
@@ -92,7 +95,7 @@ export class InvoiceAndPaymentDataPage implements WizardPageN<UpgradeSubscriptio
 				a.data.invoiceData = this._invoiceDataInput.getInvoiceData()
 				a.data.paymentData = this._paymentMethodInput.getPaymentData()
 				showProgressDialog("updatePaymentDataBusy_msg", updatePaymentData(a.data.options, a.data.invoiceData, a.data.paymentData, null,
-					a.data.upgradeType === UpgradeType.Signup)
+					a.data.upgradeType === UpgradeType.Signup, this._upgradeData.price)
 					.then(success => {
 						if (success) {
 							emitWizardEvent(vnode.dom, WizardEventType.SHOWNEXTPAGE)
@@ -145,19 +148,29 @@ export class InvoiceAndPaymentDataPageAttrs implements WizardPageAttrs<UpgradeSu
 	}
 }
 
-export function updatePaymentData(subscriptionOptions: SubscriptionOptions, invoiceData: InvoiceData, paymentData: ?PaymentData, confirmedCountry: ?Country, isSignup: boolean): Promise<boolean> {
+export function updatePaymentData(subscriptionOptions: SubscriptionOptions, invoiceData: InvoiceData, paymentData: ?PaymentData, confirmedCountry: ?Country, isSignup: boolean, price: string): Promise<boolean> {
 	return worker.updatePaymentData(subscriptionOptions.businessUse(), subscriptionOptions.paymentInterval(), invoiceData, paymentData, confirmedCountry)
 	             .then(paymentResult => {
 		             const statusCode = paymentResult.result
 		             if (statusCode === PaymentDataResultType.OK) {
-			             return true;
+			             // show dialog
+			             let braintree3ds = paymentResult.braintree3dsRequest
+			             if (braintree3ds) {
+				             let params = `clientToken=${braintree3ds.clientToken}&nonce=${braintree3ds.nonce}&bin=${braintree3ds.bin}&price=${price}&message=${encodeURIComponent(lang.get("creditCardVerification_msg"))}`
+				             // FIXME show nicer dialog (show authentication state) and do not close until authentication was successful
+				             return Dialog.confirm(() => "We will open a new window for credit card verification, now")
+				                          .then(() => window.open(`http://localhost:9000/client/src/braintree.html#${params}`))
+				                          .then(() => true)
+			             } else {
+				             return true
+			             }
 		             } else {
 			             if (statusCode === PaymentDataResultType.COUNTRY_MISMATCH) {
 				             const countryName = invoiceData.country ? invoiceData.country.n : ""
 				             const confirmMessage = lang.get("confirmCountry_msg", {"{1}": countryName})
 				             return Dialog.confirm(() => confirmMessage).then(confirmed => {
 					             if (confirmed) {
-						             return updatePaymentData(subscriptionOptions, invoiceData, paymentData, invoiceData.country, isSignup)  // add confirmed invoice country
+						             return updatePaymentData(subscriptionOptions, invoiceData, paymentData, invoiceData.country, isSignup, price)  // add confirmed invoice country
 					             } else {
 						             return false;
 					             }

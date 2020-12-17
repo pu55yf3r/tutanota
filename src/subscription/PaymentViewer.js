@@ -93,7 +93,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 			label: "paymentMethod_label",
 			click: createNotAvailableForFreeClickHandler(true, () => {
 					if (this._accountingInfo) {
-						PaymentDataDialog.show(this._accountingInfo).then(success => {
+						PaymentDataDialog.show(this._accountingInfo, this._outstandingBookingsPrice).then(success => {
 							if (success) {
 								if (this._isPayButtonVisible()) {
 									return this._showPayDialog(this._amountOwed())

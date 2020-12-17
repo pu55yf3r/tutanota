@@ -17,7 +17,7 @@ export function show(subscriptionOptions: SubscriptionOptions, invoiceData: Invo
 		if (error) {
 			Dialog.error(error)
 		} else {
-			updatePaymentData(subscriptionOptions, invoiceDataInput.getInvoiceData(), null, null, false).then(success => {
+			updatePaymentData(subscriptionOptions, invoiceDataInput.getInvoiceData(), null, null, false, "0").then(success => {
 				if (success) {
 					dialog.close()
 				}

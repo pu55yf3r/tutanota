@@ -22,6 +22,12 @@ export class CreditCardInput {
 		this.cvv = new TextField("creditCardCVV_label")
 		this.expirationDate = new TextField("creditCardExpirationDate_label", () => lang.get("creditCardExpirationDateFormat_msg"))
 
+		// fixme remove
+		this.creditCardNumber.value("4111111111111111")
+		this.cardHolderName.value("M P")
+		this.cvv.value("123")
+		this.expirationDate.value("10/22")
+
 		this.view = () => {
 			return [
 				m(this.creditCardNumber),
